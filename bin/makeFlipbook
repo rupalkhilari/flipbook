@@ -1,0 +1,206 @@
+#!/usr/bin/python
+
+#------------------------------------------------------------------------------
+# Name: makeFlipbook
+# Desc: Reads one or more videos, filters out the distinct frames, writes out
+#       these images, and optionally compiles an .rtf document containing
+#       these images in order.
+# Author: rupal.khilari@gmail.com
+#------------------------------------------------------------------------------
+
+import cv2
+import argparse
+import os
+
+
+#------------------------------------------------------------------------------
+# Name: parseArgs
+# Arguments: N/A
+# Returns: Argument object containing parsed arguments.
+# Desc: Parses arguments.
+#------------------------------------------------------------------------------
+def parseArgs():
+    """ Parses arguments. """
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        'media',
+        nargs = '+',
+        help = 'One or more video files to be read from',
+    )
+
+    parser.add_argument(
+        '-gray',
+        action='store_true',
+        default=False,
+        help='If True, converts the video to grayscale',
+    )
+
+    parser.add_argument(
+        '-show',
+        action='store_true',
+        default=False,
+        help='If True, displays a window running the video.'
+    )
+
+    parser.add_argument(
+        '-dir',
+        nargs='?',
+        help='Write out the images to the given directory',
+    )
+
+    parser.add_argument(
+        '-file',
+        nargs='?',
+        help='Write out the images extracted to the mentioned output document file',
+    )
+
+    parser.add_argument(
+        '-step',
+        default=5,
+        help='The interval at which the frames should be compared.'
+    )
+
+    parser.add_argument(
+        '-threshold',
+        default=15,
+        help='The average pixel threshold value to be considered while comparing ' \
+            'frames of the video.',
+    )
+    args = parser.parse_args()
+    return args
+
+
+#------------------------------------------------------------------------------
+# Name: compareImages
+# Arguments: image1 - First image, image2 - Second image, threshold - 
+# Returns: False, if the average pixel value of the difference is greater
+#          than the threshold, else True.
+# Desc: Calculates the image difference and determines if the 
+#       given images are significantly different.
+#------------------------------------------------------------------------------
+def compareImages(image1, image2, threshold):
+    """ Calculates the image difference and determines
+    if the images are different based on the specified threshold. """
+    avgPerPixel = 0
+    diff = cv2.subtract(image1, image2)
+    avgPerPixel = diff.sum()/(diff.size/diff.shape[2])
+    print "Average pixel value {0}".format(avgPerPixel)
+    if avgPerPixel < threshold:
+        return True
+    return False
+
+
+#------------------------------------------------------------------------------
+# Name: makeDocument
+# Arguments: document file path, images to write.
+# Returns: True, if the documement could be written out, else False.
+# Desc: Creates an .rtf document containing the specified images.
+#------------------------------------------------------------------------------
+def makeDocument(docFilePath, images):
+    """ Creates an .rtf document containing the selected images.
+    """
+    try:
+        from PyRTF import Renderer, Section, Document, Paragraph
+    except Exception as e:
+        print "ERROR: Could not find PyRTF. Make sure you have this python module installed."
+        print "http://sourceforge.net/projects/pyrtf"
+        print "Skipping document generation..."
+    else:
+        if not docFilePath.endswith('.rtf'):
+            docFilePath += '.rtf'
+        try:
+            renderer = Renderer()
+            doc = Document()
+            ss = doc.StyleSheet
+            section = Section()
+            doc.Sections.append(section)
+            for image in images:
+                section.append(Paragraph(Image(image)))
+            with open(docFilePath, 'w') as f:
+                renderer.Write(doc, f)
+        except Exception as e:
+            print str(e)
+            return False
+        return True
+
+#------------------------------------------------------------------------------
+# Name: main
+# Arguments: N/A
+# Returns: N/A
+# Desc: Main function.
+#------------------------------------------------------------------------------
+def main():
+    args = parseArgs()
+
+    threshold = float(args.threshold)
+    step = args.step
+    baseDir = args.dir if args.dir else os.environ.get('TMPDIR', '/tmp')
+    docFilePath = args.file if args.file else None
+
+    chosenImages = []
+    for video in args.media:
+        print "Processing {0}".format(video)
+        cap = cv2.VideoCapture(video)
+        counter = 0
+        prefix = os.path.basename(video).split('.')[0]
+
+        while(cap.isOpened()):
+            try:
+                ret, frame = cap.read()
+                if args.gray:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+                if args.show:
+                    cv2.imshow('frame', frame)
+
+                if counter == 0:  # Write out the first image by default
+                    image1 = frame
+                    imagePath = os.path.join(baseDir, '{0}_frame.{1}.png'.format(prefix, counter))
+                    cv2.imwrite(imagePath, frame)
+                    chosenImages.append(imagePath)
+                    prevCounter = 0
+
+                counter = counter + 1
+                if counter % step == 0:  # compare every 'step'th frame.
+                    image2 = frame
+                    print "Comparing frame {0} and {1}...".format(prevCounter, counter),
+
+
+                    if not compareImages(image1, image2, threshold):
+                        print "Different."
+                        imagePath = os.path.join(baseDir, '{0}_frame.{1}.png'.format(prefix, counter))
+                        cv2.imwrite(imagePath, frame)
+                        chosenImages.append(imagePath)
+                    else:
+                        print "Same."
+                    image1 = image2
+                    prevCounter = counter
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            except cv2.error as e:
+                print "Caught an open cv error" + str(e)
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+    # Create a document with the images if required.
+    if chosenImages:
+        if args.file:
+            if makeDocument(docFilePath, chosenImages):
+                print "Successfully written out {0}.".format(docFilePath)
+            else:
+                print "Failed to write out {0}.".format(docFilePath)
+    else:
+        print "No images found to create the document."
+
+    # Clean up the image files if the user has not requested that the image files be written out.
+    if not args.dir:
+        for chosenImage in chosenImages:
+            os.unlink(chosenImage)
+
+main()
+
+
